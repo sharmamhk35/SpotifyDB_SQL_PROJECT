@@ -1,0 +1,526 @@
+/********************************************************************************
+* Phase-2: SpotifyDB - 100 Queries (Option A)
+* Sections:
+*  A. 20 DDL queries
+*  B. 20 DML queries
+*  C. 20 DQL queries
+*  D. 20 Clauses & Constraints queries
+*  E. 20 Operators queries
+********************************************************************************/
+
+----------------------------
+-- A. DDL (20 queries)
+----------------------------
+
+-- 1. Create an audit table for tracking schema changes
+CREATE TABLE IF NOT EXISTS schema_audit (
+  audit_id INT PRIMARY KEY AUTO_INCREMENT,
+  change_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  change_by VARCHAR(100),
+  change_description TEXT
+);
+
+-- 2. Add a new column to users to store phone number
+ALTER TABLE users ADD COLUMN phone VARCHAR(20);
+
+-- 3. Modify devices table to increase device_name length
+ALTER TABLE devices MODIFY device_name VARCHAR(200);
+
+-- 4. Add an index on tracks(popularity_score) to speed queries
+CREATE INDEX idx_tracks_popularity ON tracks(popularity_score);
+
+-- 5. Create a view for top artists by monthly_listeners
+CREATE VIEW top_artists AS
+SELECT artist_id, stage_name, monthly_listeners
+FROM artists
+ORDER BY monthly_listeners DESC
+LIMIT 50;
+
+-- 6. Create a new table for song_credits (collaborators, composers)
+CREATE TABLE IF NOT EXISTS song_credits (
+  credit_id INT PRIMARY KEY AUTO_INCREMENT,
+  track_id INT NOT NULL,
+  contributor_name VARCHAR(150) NOT NULL,
+  role VARCHAR(100),
+  contribution_percent DECIMAL(5,2) CHECK (contribution_percent >= 0 AND contribution_percent <= 100),
+  FOREIGN KEY (track_id) REFERENCES tracks(track_id) ON DELETE CASCADE
+);
+
+-- 7. Rename old view if exists (safe rename using create + drop)
+DROP VIEW IF EXISTS top_artists_old;
+RENAME TABLE top_artists TO top_artists_old; -- if top_artists exists, will error if not; wrapper for demo
+
+-- 8. Create a temporary table for analytics (session)
+CREATE TEMPORARY TABLE temp_user_sessions (
+  session_id INT PRIMARY KEY AUTO_INCREMENT,
+  user_id INT,
+  started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 9. Add a constraint to reviews to ensure rating precision (if DB supports)
+ALTER TABLE reviews MODIFY rating DECIMAL(2,1) CHECK (rating >= 0 AND rating <= 5);
+
+-- 10. Drop an obsolete table (example) if present
+DROP TABLE IF EXISTS old_test_table;
+
+-- 11. Create table to store playlist statistics
+CREATE TABLE IF NOT EXISTS playlist_stats (
+  playlist_id INT PRIMARY KEY,
+  total_plays BIGINT DEFAULT 0,
+  total_followers INT DEFAULT 0,
+  last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (playlist_id) REFERENCES playlists(playlist_id) ON DELETE CASCADE
+);
+
+-- 12. Add cascade rule to tickets: when concert deleted, remove tickets
+ALTER TABLE tickets
+  DROP FOREIGN KEY IF EXISTS tickets_ibfk_1; -- best-effort drop (name varies)
+ALTER TABLE tickets
+  ADD CONSTRAINT fk_tickets_concert FOREIGN KEY (concert_id) REFERENCES concerts(concert_id) ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- 13. Add a unique constraint to song_credits (track + contributor)
+ALTER TABLE song_credits ADD CONSTRAINT uq_songcredits_track_contrib UNIQUE(track_id, contributor_name);
+
+-- 14. Create an aggregate table to cache monthly_revenue
+CREATE TABLE IF NOT EXISTS monthly_revenue_cache (
+  year_month VARCHAR(7) PRIMARY KEY,
+  revenue DECIMAL(14,2) DEFAULT 0
+);
+
+-- 15. Create a stored procedure stub (DDL-level object)
+DROP PROCEDURE IF EXISTS sp_refresh_playlist_stats;
+DELIMITER $$
+CREATE PROCEDURE sp_refresh_playlist_stats()
+BEGIN
+  /* placeholder: implement refreshing playlist_stats from playlist_tracks/play counts */
+END$$
+DELIMITER ;
+
+-- 16. Create a trigger to log deletes from users into schema_audit
+DROP TRIGGER IF EXISTS trg_users_delete;
+DELIMITER $$
+CREATE TRIGGER trg_users_delete AFTER DELETE ON users
+FOR EACH ROW
+BEGIN
+  INSERT INTO schema_audit(change_by, change_description)
+  VALUES (USER(), CONCAT('Deleted user_id=', OLD.user_id));
+END$$
+DELIMITER ;
+
+-- 17. Create a partitioned table example for listening_history by year (syntax DB-dependent; shown as create)
+CREATE TABLE listening_history_yearly (
+  history_id INT PRIMARY KEY,
+  user_id INT,
+  track_id INT,
+  played_at TIMESTAMP,
+  duration_played INT
+) ENGINE=InnoDB;
+
+-- 18. Add column comment (if DB supports comments)
+ALTER TABLE artists MODIFY monthly_listeners INT DEFAULT 0 COMMENT 'Monthly listeners estimate';
+
+-- 19. Create an audit log for payments
+CREATE TABLE IF NOT EXISTS payment_audit (
+  audit_id INT PRIMARY KEY AUTO_INCREMENT,
+  payment_id INT,
+  changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  old_status VARCHAR(20),
+  new_status VARCHAR(20)
+);
+
+-- 20. Truncate a temp table used for ETL
+TRUNCATE TABLE IF EXISTS temp_user_sessions;
+
+----------------------------
+-- B. DML (20 queries)
+----------------------------
+
+-- 21. Insert a new user (DML - INSERT)
+INSERT INTO users (user_id, username, email, full_name, password_hash, country, dob, signup_date, is_premium, preferred_lang, phone)
+VALUES (101, 'newuser101', 'newuser101@example.com', 'New User', 'hash101', 'India', '1998-01-01', CURRENT_DATE, FALSE, 'en', '9999999999');
+
+-- 22. Bulk insert a few test artists
+INSERT INTO artists (artist_id, stage_name, real_name, country, debut_year, genre, monthly_listeners, followers, is_verified, label)
+VALUES
+(101, 'IndieStar', 'Indie Person', 'India', 2015, 'Indie', 120000, 80000, FALSE, 'IndieLabel'),
+(102, 'ElectroKing', 'Electro King', 'UK', 2012, 'EDM', 500000, 300000, TRUE, 'Pulse');
+
+-- 23. Update: upgrade a user to premium
+UPDATE users SET is_premium = TRUE WHERE username = 'maya1';
+
+-- 24. Update: increase monthly_listeners for an artist by 10%
+UPDATE artists SET monthly_listeners = monthly_listeners * 1.10 WHERE artist_id = 101;
+
+-- 25. Delete: remove a test advertiser with zero budget
+DELETE FROM advertisers WHERE budget = 0;
+
+-- 26. Insert subscription for user (DML)
+INSERT INTO subscriptions (subscription_id, user_id, plan_name, start_date, end_date, is_active, renewal_type, price, payment_method, last_payment_date)
+VALUES (101, 101, 'Premium Monthly', CURRENT_DATE, DATE_ADD(CURRENT_DATE, INTERVAL 30 DAY), TRUE, 'Auto', 9.99, 'Card', CURRENT_DATE);
+
+-- 27. Insert payment record and link to subscription
+INSERT INTO payments (payment_id, subscription_id, user_id, amount, payment_date, payment_method, status, transaction_id, currency, invoice_url)
+VALUES (101, 101, 101, 9.99, CURRENT_DATE, 'Card', 'Success', 'TXN2001', 'USD', 'https://invoice/2001');
+
+-- 28. Update: mark old playlist as archived
+UPDATE playlists SET status = 'Archived', is_public = FALSE WHERE created_at < '2023-01-01';
+
+-- 29. Delete: remove temp song credits older than 0% share
+DELETE FROM song_credits WHERE contribution_percent = 0;
+
+-- 30. Insert sample song_credit rows
+INSERT INTO song_credits(track_id, contributor_name, role, contribution_percent)
+VALUES (1, 'Jane Composer', 'Composer', 15.00), (1, 'John Producer', 'Producer', 10.00);
+
+-- 31. Update: increment play_count in playlist_tracks for favorites
+UPDATE playlist_tracks SET play_count = play_count + 1 WHERE is_favorite = TRUE;
+
+-- 32. Insert multiple playlist entries for a user
+INSERT INTO playlists (playlist_id, user_id, playlist_name, description, created_at, is_public, total_tracks, followers_count, status)
+VALUES (201, 101, 'New User Mix', 'My starter mix', CURRENT_DATE, TRUE, 0, 0, 'Active');
+
+-- 33. Update devices: set last_login to now for a device
+UPDATE devices SET last_login = CURRENT_DATE WHERE device_id = 1;
+
+-- 34. Insert ad_play for an advertiser
+INSERT INTO ad_plays (ad_play_id, advertiser_id, user_id, content_type, content_id, play_time, device_id, duration_seconds, revenue_generated, is_skipped)
+VALUES (201, 1, 101, 'Track', 1, CURRENT_TIMESTAMP, 1, 30, 2.50, FALSE);
+
+-- 35. Delete listeners with no activity (example; careful in prod)
+DELETE FROM listening_history WHERE played_at < '2022-01-01';
+
+-- 36. Update: give discount to student plan subscribers (example update amount)
+UPDATE subscriptions SET price = price * 0.9 WHERE plan_name LIKE '%Student%';
+
+-- 37. Insert review by new user
+INSERT INTO reviews (review_id, user_id, item_type, item_id, rating, review_text, review_date, is_verified, likes, replies)
+VALUES (201, 101, 'Playlist', 201, 4.5, 'Nice starter playlist!', CURRENT_DATE, TRUE, 0, 0);
+
+-- 38. Update: correct label name for many albums
+UPDATE albums SET label = 'Universal Music' WHERE label = 'Universal Music India';
+
+-- 39. Delete sample advertisers older than end_date
+DELETE FROM advertisers WHERE end_date < '2023-01-01';
+
+-- 40. Insert a concert and associated ticket (two-step demo)
+INSERT INTO concerts (concert_id, concert_name, artist_id, venue, city, country, concert_date, start_time, end_time, ticket_price)
+VALUES (201, 'Demo Concert', 101, 'Demo Hall', 'Test City', 'Testland', DATE_ADD(CURRENT_DATE, INTERVAL 60 DAY), '19:00:00', '22:00:00', 50.00);
+INSERT INTO tickets (ticket_id, concert_id, user_id, seat_number, purchase_date, price, ticket_type, status, payment_method, qr_code)
+VALUES (201, 201, 101, 'D1', CURRENT_DATE, 50.00, 'General', 'Booked', 'Card', 'QR2001');
+
+----------------------------
+-- C. DQL (20 queries)
+----------------------------
+
+-- 41. Select all users (LIMIT sample)
+SELECT * FROM users LIMIT 20;
+
+-- 42. Select top 10 most popular tracks by popularity_score
+SELECT track_id, track_title, popularity_score
+FROM tracks
+ORDER BY popularity_score DESC
+LIMIT 10;
+
+-- 43. Join tracks -> albums -> album_artists -> artists to show track with primary artist
+SELECT t.track_id, t.track_title, a.album_name, ar.stage_name
+FROM tracks t
+JOIN albums a ON t.album_id = a.album_id
+JOIN album_artists aa ON aa.album_id = a.album_id AND aa.role = 'Primary'
+JOIN artists ar ON ar.artist_id = aa.artist_id
+ORDER BY t.track_id
+LIMIT 50;
+
+-- 44. User listening history with username and track title
+SELECT u.username, t.track_title, lh.played_at, lh.duration_played
+FROM listening_history lh
+JOIN users u ON u.user_id = lh.user_id
+JOIN tracks t ON t.track_id = lh.track_id
+WHERE lh.played_at >= '2023-01-01'
+ORDER BY lh.played_at DESC
+LIMIT 100;
+
+-- 45. Revenue per subscription plan (aggregated)
+SELECT s.plan_name, COUNT(s.subscription_id) AS subscribers, COALESCE(SUM(p.amount),0) AS revenue
+FROM subscriptions s
+LEFT JOIN payments p ON p.subscription_id = s.subscription_id
+GROUP BY s.plan_name
+ORDER BY revenue DESC;
+
+-- 46. Most-followed artists
+SELECT artist_id, stage_name, followers
+FROM artists
+ORDER BY followers DESC
+LIMIT 10;
+
+-- 47. Playlists with more than 1000 followers
+SELECT playlist_id, playlist_name, followers_count
+FROM playlists
+WHERE followers_count > 1000
+ORDER BY followers_count DESC;
+
+-- 48. Users who have premium and their subscription details
+SELECT u.user_id, u.username, s.plan_name, s.start_date, s.end_date
+FROM users u
+LEFT JOIN subscriptions s ON s.user_id = u.user_id
+WHERE u.is_premium = TRUE;
+
+-- 49. Ad plays per advertiser with total revenue
+SELECT a.advertiser_id, a.company_name, COUNT(ap.ad_play_id) AS plays, SUM(ap.revenue_generated) AS revenue
+FROM advertisers a
+LEFT JOIN ad_plays ap ON ap.advertiser_id = a.advertiser_id
+GROUP BY a.advertiser_id
+ORDER BY revenue DESC
+LIMIT 20;
+
+-- 50. Top 5 podcasts by total plays (sum of episode plays)
+SELECT p.podcast_id, p.title, SUM(pe.plays_count) AS total_plays
+FROM podcasts p
+JOIN podcast_episodes pe ON pe.podcast_id = p.podcast_id
+GROUP BY p.podcast_id
+ORDER BY total_plays DESC
+LIMIT 5;
+
+-- 51. Tracks with no album (if any)
+SELECT * FROM tracks WHERE album_id IS NULL;
+
+-- 52. Albums and average track popularity
+SELECT al.album_id, al.album_name, AVG(t.popularity_score) AS avg_popularity
+FROM albums al
+JOIN tracks t ON t.album_id = al.album_id
+GROUP BY al.album_id
+ORDER BY avg_popularity DESC;
+
+-- 53. Find users who never paid (free users with no payments)
+SELECT u.user_id, u.username
+FROM users u
+LEFT JOIN payments p ON p.user_id = u.user_id
+WHERE p.payment_id IS NULL;
+
+-- 54. Recently active devices (last_login in last 90 days)
+SELECT device_id, user_id, device_name, last_login
+FROM devices
+WHERE last_login >= DATE_SUB(CURRENT_DATE, INTERVAL 90 DAY);
+
+-- 55. Concerts with ticket count and total sales
+SELECT c.concert_id, c.concert_name, COUNT(t.ticket_id) AS tickets_sold, SUM(t.price) AS total_sales
+FROM concerts c
+LEFT JOIN tickets t ON t.concert_id = c.concert_id
+GROUP BY c.concert_id
+ORDER BY total_sales DESC;
+
+-- 56. Search tracks by title using LIKE
+SELECT track_id, track_title FROM tracks WHERE track_title LIKE '%Love%' ORDER BY popularity_score DESC;
+
+-- 57. Users and their saved library counts
+SELECT u.user_id, u.username, COUNT(ul.library_id) AS saved_items
+FROM users u
+LEFT JOIN user_library ul ON ul.user_id = u.user_id
+GROUP BY u.user_id
+ORDER BY saved_items DESC;
+
+-- 58. Find duplicate emails (data quality check)
+SELECT email, COUNT(*) FROM users GROUP BY email HAVING COUNT(*) > 1;
+
+-- 59. Get top contributors in song_credits
+SELECT contributor_name, SUM(contribution_percent) AS total_share
+FROM song_credits
+GROUP BY contributor_name
+ORDER BY total_share DESC
+LIMIT 20;
+
+-- 60. Show payment audit trail for refunded payments
+SELECT pa.* FROM payment_audit pa JOIN payments p ON p.payment_id = pa.payment_id WHERE pa.new_status = 'Refunded';
+
+----------------------------
+-- D. Clauses & Constraints (20 queries)
+-- Demonstrate WHERE, GROUP BY, HAVING, ORDER BY, LIMIT and constraint examples
+----------------------------
+
+-- 61. Create a constrained table example (age checks) for demo
+CREATE TABLE IF NOT EXISTS demo_users (
+  demo_id INT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(100),
+  age INT CHECK (age BETWEEN 13 AND 120)
+);
+
+-- 62. Select users grouped by country, include only countries with >2 users (HAVING)
+SELECT country, COUNT(*) AS users_count
+FROM users
+GROUP BY country
+HAVING COUNT(*) > 2
+ORDER BY users_count DESC;
+
+-- 63. Find artists debuting between 2000 and 2010 (BETWEEN clause)
+SELECT artist_id, stage_name, debut_year FROM artists WHERE debut_year BETWEEN 2000 AND 2010 ORDER BY debut_year;
+
+-- 64. Get playlists and number of favorite tracks using join and group by
+SELECT p.playlist_id, p.playlist_name, SUM(CASE WHEN pt.is_favorite THEN 1 ELSE 0 END) AS favorite_count
+FROM playlists p
+LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.playlist_id
+GROUP BY p.playlist_id
+ORDER BY favorite_count DESC
+LIMIT 50;
+
+-- 65. Delete playlists that are archived older than a year (use WHERE + subquery)
+DELETE FROM playlists
+WHERE status = 'Archived' AND created_at < DATE_SUB(CURRENT_DATE, INTERVAL 1 YEAR);
+
+-- 66. Update prices for concerts in a given city (WHERE + arithmetic)
+UPDATE concerts SET ticket_price = ticket_price * 1.05 WHERE city = 'New York';
+
+-- 67. Get tracks that have more than one genre (use GROUP BY + HAVING)
+SELECT t.track_id, t.track_title, COUNT(tg.genre_id) AS genre_count
+FROM tracks t
+JOIN track_genres tg ON tg.track_id = t.track_id
+GROUP BY t.track_id
+HAVING COUNT(tg.genre_id) > 1;
+
+-- 68. Use ORDER BY multiple columns (popularity then duration)
+SELECT track_id, track_title, popularity_score, duration_seconds
+FROM tracks
+ORDER BY popularity_score DESC, duration_seconds ASC
+LIMIT 100;
+
+-- 69. Use conditional WHERE with OR/AND
+SELECT * FROM users WHERE (country = 'India' OR country = 'UK') AND is_premium = TRUE;
+
+-- 70. Add a foreign key constraint with ON DELETE SET NULL (example)
+ALTER TABLE playlist_tracks
+  DROP FOREIGN KEY IF EXISTS fk_playlisttracks_addedby;
+ALTER TABLE playlist_tracks
+  ADD CONSTRAINT fk_playlisttracks_addedby FOREIGN KEY (added_by) REFERENCES users(user_id) ON DELETE SET NULL;
+
+-- 71. Use EXISTS in WHERE clause: find users who have at least one premium subscription
+SELECT u.user_id, u.username FROM users u
+WHERE EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = u.user_id AND s.price > 0);
+
+-- 72. Use NOT IN to find tracks not in any playlist
+SELECT t.track_id, t.track_title FROM tracks t
+WHERE t.track_id NOT IN (SELECT track_id FROM playlist_tracks);
+
+-- 73. Use LIMIT with OFFSET to paginate artists
+SELECT artist_id, stage_name FROM artists ORDER BY monthly_listeners DESC LIMIT 10 OFFSET 10;
+
+-- 74. Create check constraint on album duration (if supported)
+ALTER TABLE albums ADD CONSTRAINT chk_duration_positive CHECK (duration_min > 0);
+
+-- 75. Use subquery in SELECT list to fetch number of tracks per album
+SELECT al.album_id, al.album_name,
+  (SELECT COUNT(*) FROM tracks t WHERE t.album_id = al.album_id) AS tracks_count
+FROM albums al
+ORDER BY tracks_count DESC;
+
+-- 76. Use HAVING with aggregate filter for advertisers spending more than X on ad_plays
+SELECT ap.advertiser_id, a.company_name, SUM(ap.revenue_generated) AS total_spend
+FROM ad_plays ap
+JOIN advertisers a ON a.advertiser_id = ap.advertiser_id
+GROUP BY ap.advertiser_id
+HAVING SUM(ap.revenue_generated) > 1000
+ORDER BY total_spend DESC;
+
+-- 77. Use CASE in ORDER BY (featured first)
+SELECT playlist_id, playlist_name, is_public FROM playlists
+ORDER BY CASE WHEN is_public THEN 0 ELSE 1 END, followers_count DESC;
+
+-- 78. Use multi-table DELETE via join pattern (DB-specific) - example delete stale temp rows
+DELETE t FROM temp_user_sessions t WHERE t.started_at < DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 1 DAY);
+
+-- 79. Rename a column (DB-specific; example for MySQL)
+ALTER TABLE users CHANGE COLUMN preferred_lang preferred_language VARCHAR(10) NOT NULL DEFAULT 'en';
+
+-- 80. Use GROUP BY ROLLUP (if supported) to show revenue breakdown by plan (syntax may be vendor-specific)
+SELECT s.plan_name, SUM(p.amount) AS revenue
+FROM subscriptions s
+LEFT JOIN payments p ON p.subscription_id = s.subscription_id
+GROUP BY s.plan_name WITH ROLLUP;
+
+----------------------------
+-- E. Operators (20 queries)
+-- Demonstrate arithmetic, comparison, logical, IN, BETWEEN, LIKE, IS NULL, COALESCE, CASE, EXISTS, ANY, ALL, UNION, INTERSECT (if supported)
+----------------------------
+
+-- 81. Arithmetic operator: calculate annual revenue per user (sum of payments)
+SELECT p.user_id, SUM(p.amount) AS yearly_revenue, SUM(p.amount) * 1.0 AS revenue_calc
+FROM payments p
+WHERE YEAR(p.payment_date) = YEAR(CURRENT_DATE)
+GROUP BY p.user_id;
+
+-- 82. Comparison operators: find tracks with popularity >= 90
+SELECT track_id, track_title, popularity_score FROM tracks WHERE popularity_score >= 90;
+
+-- 83. Logical operators: users who are premium AND from India
+SELECT user_id, username FROM users WHERE is_premium = TRUE AND country = 'India';
+
+-- 84. IN operator: get playlists that belong to a list of users
+SELECT playlist_id, playlist_name FROM playlists WHERE user_id IN (1,2,3,4,5);
+
+-- 85. BETWEEN operator: concerts happening between two dates
+SELECT * FROM concerts WHERE concert_date BETWEEN '2023-06-01' AND '2023-12-31';
+
+-- 86. LIKE operator: artists with 'The' in their name (pattern)
+SELECT artist_id, stage_name FROM artists WHERE stage_name LIKE 'The %';
+
+-- 87. IS NULL operator: find playlists with no description
+SELECT playlist_id, playlist_name FROM playlists WHERE description IS NULL;
+
+-- 88. COALESCE: show user phone or default string
+SELECT user_id, username, COALESCE(phone, 'No phone') AS phone_or_default FROM users;
+
+-- 89. CASE expression: tag popularity bucket for tracks
+SELECT track_id, track_title,
+  CASE
+    WHEN popularity_score >= 90 THEN 'Platinum'
+    WHEN popularity_score >= 75 THEN 'Gold'
+    WHEN popularity_score >= 50 THEN 'Silver'
+    ELSE 'Bronze'
+  END AS popularity_tier
+FROM tracks;
+
+-- 90. EXISTS with correlated subquery: artists with at least one album
+SELECT ar.artist_id, ar.stage_name
+FROM artists ar
+WHERE EXISTS (SELECT 1 FROM album_artists aa JOIN albums al ON aa.album_id = al.album_id WHERE aa.artist_id = ar.artist_id);
+
+-- 91. ANY/ALL example: find tracks with popularity greater than ANY album average popularity (DB dependent)
+SELECT t.track_id, t.track_title FROM tracks t
+WHERE t.popularity_score > ANY (SELECT AVG(popularity_score) FROM tracks GROUP BY album_id);
+
+-- 92. UNION: combine two user lists (premium and free) distinct
+SELECT user_id, username, 'Premium' AS type FROM users WHERE
+
+
+
+
+SELECT user_id, username, 'Premium' AS type FROM users WHERE is_premium = TRUE
+UNION
+SELECT user_id, username, 'Free' AS type FROM users WHERE is_premium = FALSE;
+
+-- 93. Arithmetic with columns: compute revenue share per ad_play (example)
+SELECT ad_play_id, revenue_generated, revenue_generated * 0.7 AS platform_share, revenue_generated * 0.3 AS advertiser_share
+FROM ad_plays;
+
+-- 94. NULL-safe comparison (if DB supports <=>) example for MySQL: find entries where ip_address is null
+SELECT device_id, device_name FROM devices WHERE ip_address IS NULL;
+
+-- 95. Use bitwise/logical operators (example: flags stored as integers) - simulated
+SELECT playlist_id, total_tracks, (total_tracks & 1) AS is_odd_track_count FROM playlists;
+
+-- 96. ARRAY/JSON operators (DB-specific) - example using JSON functions (MySQL)
+SELECT playlist_id, JSON_LENGTH(JSON_ARRAYAGG(track_id)) AS track_array_len FROM playlist_tracks GROUP BY playlist_id;
+
+-- 97. Use mathematical function and rounding
+SELECT track_id, track_title, ROUND(duration_seconds / 60.0, 2) AS duration_minutes FROM tracks;
+
+-- 98. Use string concatenation and operators
+SELECT user_id, CONCAT(full_name, ' <', email, '>') AS contact_card FROM users;
+
+-- 99. Use EXISTS with NOT to find users who have not created any playlist
+SELECT u.user_id, u.username FROM users u
+WHERE NOT EXISTS (SELECT 1 FROM playlists p WHERE p.user_id = u.user_id);
+
+-- 100. Use analytic pattern (window function example; DB dependent)
+SELECT track_id, track_title, popularity_score,
+  RANK() OVER (ORDER BY popularity_score DESC) AS popularity_rank
+FROM tracks
+ORDER BY popularity_rank
+LIMIT 50;
